@@ -179,6 +179,8 @@ function FileBrowserInclude(mode, info, doesOpenLast = true) {
 			list: [],
 			scroll: 0,
 		};
+		/** @type {AbortController | null} */
+		let _rndrAbortCtrl;
 		/**
 		 * @type {HTMLButtonElement}
 		 */
@@ -647,6 +649,7 @@ function FileBrowserInclude(mode, info, doesOpenLast = true) {
 		};
 
 		$page.onhide = function () {
+			_rndrAbortCtrl?.abort();
 			hideSearchBar();
 			actionStack.clearFromMark();
 			actionStack.remove("filebrowser");
@@ -1714,6 +1717,11 @@ function FileBrowserInclude(mode, info, doesOpenLast = true) {
 		 * @param {boolean} force
 		 */
 		async function renderCurrentDir(force) {
+			_rndrAbortCtrl?.abort();
+			const rndrAbortCtrl = new AbortController();
+			const abortSignal = rndrAbortCtrl.signal;
+			_rndrAbortCtrl = rndrAbortCtrl;
+
 			const { url, name } = navStack.get(-1) ?? {};
 
 			if (IS_FOLDER_MODE) $openFolder.disabled = (url || "/") === "/";
@@ -1751,6 +1759,7 @@ function FileBrowserInclude(mode, info, doesOpenLast = true) {
 				try {
 					list = await getDirList(url);
 				} catch (err) {
+					if (abortSignal.aborted) return;
 					currentDir = _dir;
 					let name = "Error";
 					let code = Number.NaN;
@@ -1775,6 +1784,8 @@ function FileBrowserInclude(mode, info, doesOpenLast = true) {
 				if (abortSignal.aborted) return;
 				dir.list = list;
 			}
+
+			if (_rndrAbortCtrl === rndrAbortCtrl) _rndrAbortCtrl = null;
 
 			const $list = helpers.parseHTML(
 				mustache.render(_list, {
