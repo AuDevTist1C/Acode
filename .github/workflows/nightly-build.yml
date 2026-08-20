@@ -40,9 +40,6 @@ on:
       normal_artifact_name:
         description: Artifact name for normal APK
         value: ${{ jobs.build.outputs.normal_artifact_name }}
-      fdroid_artifact_name:
-        description: Artifact name for fdroid APK
-        value: ${{ jobs.build.outputs.fdroid_artifact_name }}
 
   workflow_dispatch:
     inputs:
@@ -132,7 +129,6 @@ jobs:
           GIT_COMMIT="$(git rev-parse HEAD)"
           echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
           echo "normal_artifact_name=app-debug-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
-          echo "fdroid_artifact_name=app-debug-fdroid-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Inject signing files
         if: ${{ !inputs.is_PR || inputs.is_trusted_pr }}
@@ -159,7 +155,6 @@ jobs:
           sed -i "s/version=\"${{ steps.base.outputs.version }}\"/version=\"$UPDATED\"/g" config.xml
           echo "updated_version=$UPDATED" >> "$GITHUB_OUTPUT"
           echo "NORMAL_APK_PATH=/tmp/acode-debug-normal-$UPDATED.apk" >> "$GITHUB_ENV"
-          echo "FDROID_APK_PATH=/tmp/acode-debug-fdroid-$UPDATED.apk" >> "$GITHUB_ENV"
 
       - name: Install deps
         run: |
@@ -180,21 +175,6 @@ jobs:
           compression-level: 9
           path: ${{ env.NORMAL_APK_PATH }}
 
-      - name: Build fdroid APK
-        if: ${{ !inputs.is_PR }}
-        run: |
-          node utils/storage_manager.mjs y
-          npm run build paid dev apk fdroid
-          mv platforms/android/app/build/outputs/apk/debug/app-debug.apk ${{ env.FDROID_APK_PATH }}
-
-      - name: Upload fdroid artifact
-        if: ${{ !inputs.is_PR }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.meta.outputs.fdroid_artifact_name }}
-          compression-level: 9
-          path: ${{ env.FDROID_APK_PATH }}
-
       - name: Cleanup signing files
         if: ${{ !inputs.is_PR || inputs.is_trusted_pr }}
         run: rm -f ${{ env.STORE_FILE_PATH }} ${{ env.BUILD_JSON_PATH }}
@@ -203,9 +183,6 @@ jobs:
         id: sha256
         run: |
           echo "normal_apk_sha256=$(sha256sum ${{ env.NORMAL_APK_PATH }} | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          if [ -f "${{ env.FDROID_APK_PATH }}" ]; then
-            echo "fdroid_apk_sha256=$(sha256sum ${{ env.FDROID_APK_PATH }} | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Post build summary (Table)
         run: |
@@ -215,6 +192,4 @@ jobs:
           echo "| Build Version | ${{ steps.version.outputs.updated_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Git Commit | ${{ steps.meta.outputs.git_commit }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Normal APK Artifact Name | ${{ steps.meta.outputs.normal_artifact_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| F-Droid APK Artifact Name | ${{ steps.meta.outputs.fdroid_artifact_name || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Normal APK Artifact SHA256 | ${{ steps.sha256.outputs.normal_apk_sha256 }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| F-Droid APK Artifact SHA256 | ${{ steps.sha256.outputs.fdroid_apk_sha256 || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
