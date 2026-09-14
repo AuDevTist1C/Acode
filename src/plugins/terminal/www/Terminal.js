@@ -176,7 +176,7 @@ const Terminal = {
                 throw new Error(`Unsupported architecture: ${arch}`);
             }
 
-            if(isFdroid === "true") {
+            if(1 || isFdroid === "true") {
                 const buildUrl = (...parts) => parts.join("");
 
 
