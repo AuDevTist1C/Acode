@@ -95,6 +95,11 @@ declare type LangStrings = {
   "success": string;
   "tab size": string;
   "text wrap": string;
+  "wrapped line indent": string;
+  "wrap-indent-same": string;
+  "wrap-indent-indent": string;
+  "wrap-indent-deep": string;
+  "settings-info-editor-wrapping-indent": string;
   "theme": string;
   "title-listfiles": string;
   "ui zoom": string;
@@ -177,6 +182,9 @@ declare type LangStrings = {
   "light": string;
   "dark": string;
   "file browser": string;
+  "icon pack": string;
+  "settings-info-icon-pack": string;
+  "unavailable": string;
   "operation not permitted": string;
   "no such file or directory": string;
   "input/output error": string;
@@ -646,7 +654,7 @@ declare type LangStrings = {
   "settings-category-cursor": string;
   "settings-category-cursor-selection": string;
   "settings-category-custom-servers": string;
-  "settings-category-customization-tools": string;
+  "settings-category-customization": string;
   "settings-category-display": string;
   "settings-category-editing": string;
   "settings-category-features": string;
@@ -665,6 +673,7 @@ declare type LangStrings = {
   "settings-category-session": string;
   "settings-category-support-acode": string;
   "settings-category-text-layout": string;
+  "settings-category-tools": string;
   "settings-info-app-animation": string;
   "settings-info-app-check-files": string;
   "settings-info-app-clean-install-state": string;
@@ -771,6 +780,7 @@ declare type LangStrings = {
   "app font": string;
   "app icon": string;
   "app icon changed": string;
+  "app icon change warning": string;
   "settings-info-app-font-family": string;
   "settings-info-app-icon": string;
   "unsaved selected tabs warning": string;
