@@ -65,6 +65,9 @@ describe("restored file loading", () => {
 		"sftp",
 		"http",
 		"https",
+		"gh",
+		"plugin",
+		"custom",
 	])("does not block startup on an unresolved %s tab", async (protocol) => {
 		await restoreFiles([
 			{

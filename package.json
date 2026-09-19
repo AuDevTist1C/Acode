@@ -1,7 +1,7 @@
 {
   "name": "com.foxdebug.acode",
   "displayName": "Acode",
-  "version": "1.13.3",
+  "version": "1.13.5",
   "description": "Acode is a code editor for android",
   "scripts": {
     "lang": "node ./utils/lang.js",
@@ -108,6 +108,7 @@
     "cordova-plugin-system": "file:src/plugins/system",
     "cordova-plugin-websocket": "file:src/plugins/websocket",
     "css-loader": "^7.1.4",
+    "elementtree": "^0.1.7",
     "happy-dom": "^20.11.6",
     "jpeg-js": "0.4.4",
     "mini-css-extract-plugin": "^2.10.2",
