@@ -6,13 +6,12 @@ import loader from "dialogs/loader";
 import select from "dialogs/select";
 import actions from "handlers/quickTools";
 import actionStack from "lib/actionStack";
-import { getAppIconLabel } from "lib/appIcons";
 import config from "lib/config";
+import fileIcons from "lib/fileIcons";
 import fonts from "lib/fonts";
 import lang from "lib/lang";
 import openFile from "lib/openFile";
 import appSettings from "lib/settings";
-import appIconSetting from "pages/appIconSetting";
 import FontManager from "pages/fontManager";
 import QuickToolsSettings from "pages/quickTools";
 import encodings, { getEncoding } from "utils/encodings";
@@ -65,17 +64,6 @@ export default function otherSettings() {
 			checkbox: values.fullscreen,
 			info: strings["settings-info-app-fullscreen"],
 			category: categories.interface,
-		},
-		{
-			key: "appIcon",
-			text: strings["app icon"] || "App icon",
-			value: values.appIcon || "default",
-			valueText: (value) => getAppIconLabel(value),
-			info:
-				strings["settings-info-app-icon"] ||
-				"Choose the app icon displayed on your device.",
-			category: categories.interface,
-			chevron: true,
 		},
 		{
 			key: "uiZoom",
@@ -240,6 +228,27 @@ export default function otherSettings() {
 			chevron: true,
 		},
 		{
+			key: "iconTheme",
+			text: strings["icon pack"],
+			value: values.iconTheme || "builtin",
+			get select() {
+				return fileIcons
+					.list()
+					.map((theme) => [
+						theme.id,
+						theme.available === false
+							? `${theme.name} (${strings.unavailable || "unavailable"})`
+							: theme.name,
+					]);
+			},
+			valueText: (value) => {
+				const theme = fileIcons.list().find((entry) => entry.id === value);
+				return theme?.name || value || "Builtin";
+			},
+			info: strings["settings-info-icon-pack"],
+			category: categories.interface,
+		},
+		{
 			key: "rememberFiles",
 			text: strings["remember opened files"],
 			checkbox: values.rememberFiles,
@@ -402,20 +411,6 @@ export default function otherSettings() {
 
 			case "fontManager":
 				FontManager();
-				return;
-
-			case "appIcon":
-				await appIconSetting();
-				{
-					const item = items.find((i) => i.key === "appIcon");
-					if (item) item.value = appSettings.value.appIcon || "default";
-					const $value = this.get(".setting-trailing-value");
-					if ($value) {
-						$value.textContent = getAppIconLabel(
-							appSettings.value.appIcon || "default",
-						);
-					}
-				}
 				return;
 
 			case "appFont":
