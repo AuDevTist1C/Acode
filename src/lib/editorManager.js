@@ -44,6 +44,11 @@ import {
 	focusEditorIfEditable,
 	reconfigureEditorReadOnly,
 } from "cm/editorReadOnly";
+import { getFileLanguageExtension } from "cm/fileLanguage";
+import {
+	markKeyboardScrollBrowsing,
+	registerKeyboardCursorReveal,
+} from "cm/keyboardScroll";
 import { handleLineNumberClick } from "cm/lineNumberSelection";
 import localWordCompletions, {
 	localWordCompletionSource,
@@ -740,7 +745,8 @@ async function EditorManager($header, $body) {
 	function activatePane(pane, options = {}) {
 		if (!pane) return null;
 		if (activePane === pane) {
-			if (options.focusEditor !== false) pane.editor?.focus?.();
+			if (options.focusEditor !== false && pane.editor)
+				focusEditorIfEditable(pane.editor);
 			return pane;
 		}
 
@@ -751,7 +757,8 @@ async function EditorManager($header, $body) {
 		}
 
 		setActivePane(pane, { emitSwitch: false });
-		if (options.focusEditor !== false) pane.editor?.focus?.();
+		if (options.focusEditor !== false && pane.editor)
+			focusEditorIfEditable(pane.editor);
 		return pane;
 	}
 
@@ -829,34 +836,11 @@ async function EditorManager($header, $body) {
 	};
 
 	function registerSoftKeyboardCursorReveal() {
-		const shouldRevealCursor = () => {
-			const view = editor;
-			if (!view || manager?.activeFile?.type !== "editor") return false;
-			const activeElement = document.activeElement;
-			return (
-				view.contentDOM === activeElement ||
-				view.contentDOM.contains(activeElement)
-			);
-		};
-
-		keyboardHandler.on("keyboardShowStart", () => {
-			requestAnimationFrame(() => {
-				if (!shouldRevealCursor()) return;
-				if (isCursorRevealSuppressed()) return;
-				scrollCursorIntoView({ behavior: "instant" });
-			});
-		});
-		keyboardHandler.on("keyboardShow", () => {
-			if (!shouldRevealCursor()) return;
-			if (isCursorRevealSuppressed()) return;
-			scrollCursorIntoView();
-		});
-		keyboardHandler.on("keyboardHide", () => {
-			requestAnimationFrame(() => {
-				if (!shouldRevealCursor()) return;
-				if (isCursorRevealSuppressed()) return;
-				scrollCursorIntoView({ behavior: "instant" });
-			});
+		registerKeyboardCursorReveal({
+			events: keyboardHandler,
+			getView: () => editor,
+			canReveal: () =>
+				manager?.activeFile?.type === "editor" && !isCursorRevealSuppressed(),
 		});
 	}
 
@@ -2749,7 +2733,7 @@ async function EditorManager($header, $body) {
 
 		let result;
 		try {
-			result = langExtFn();
+			result = getFileLanguageExtension(file);
 		} catch (_) {
 			markLanguageReady(file, languageSignature, true);
 			return [];
@@ -4360,8 +4344,6 @@ async function EditorManager($header, $body) {
 
 		// Attach native DOM event listeners directly to the editor's contentDOM
 		const contentDOM = editor.contentDOM;
-		let readOnlyNativeContextActive = false;
-		let readOnlyNativeContextResetTimer = null;
 		const isReadOnlyEditor = () => {
 			const activeFile = pane.activeFile;
 			return (
@@ -4381,46 +4363,18 @@ async function EditorManager($header, $body) {
 			keyboardHandler.off("keyboardHide", pendingKeyboardHideBlur);
 			pendingKeyboardHideBlur = null;
 		};
-		const releaseReadOnlyNativeContext = () => {
-			clearTimeout(readOnlyNativeContextResetTimer);
-			readOnlyNativeContextResetTimer = null;
-			if (!readOnlyNativeContextActive) return;
-			readOnlyNativeContextActive = false;
-			setNativeContextMenuDisabled(false);
-		};
-		const scheduleReadOnlyNativeContextRelease = () => {
-			if (!readOnlyNativeContextActive) return;
-			clearTimeout(readOnlyNativeContextResetTimer);
-			readOnlyNativeContextResetTimer = setTimeout(
-				releaseReadOnlyNativeContext,
-				800,
-			);
-		};
 		function handleContentPointerDown() {
-			if (!isReadOnlyEditor()) return;
-			clearTimeout(readOnlyNativeContextResetTimer);
-			readOnlyNativeContextResetTimer = null;
-			readOnlyNativeContextActive = true;
-			setNativeContextMenuDisabled(true);
-		}
-		function handleDocumentPointerDown(event) {
-			if (!readOnlyNativeContextActive) return;
-			if (event.target instanceof Node && editor.dom.contains(event.target)) {
-				return;
-			}
-			releaseReadOnlyNativeContext();
+			if (isReadOnlyEditor()) setNativeContextMenuDisabled(false);
 		}
 		const isFocused =
 			contentDOM === document.activeElement ||
 			contentDOM.contains(document.activeElement);
-		setNativeContextMenuDisabled(isFocused);
+		setNativeContextMenuDisabled(isFocused && !isReadOnlyEditor());
 
 		function handleContentFocus(_event) {
 			setActivePane(pane);
 			if (isReadOnlyEditor()) {
-				if (!readOnlyNativeContextActive) {
-					setNativeContextMenuDisabled(false);
-				}
+				setNativeContextMenuDisabled(false);
 				clearPendingKeyboardHideBlur();
 				clearFileFocusState();
 				blurEditorIfReadOnly(editor, true);
@@ -4436,9 +4390,7 @@ async function EditorManager($header, $body) {
 		}
 
 		async function handleContentBlur(_event) {
-			if (!readOnlyNativeContextActive) {
-				setNativeContextMenuDisabled(false);
-			}
+			setNativeContextMenuDisabled(false);
 			touchSelectionController?.setMenu(false);
 			if (isReadOnlyEditor()) {
 				clearPendingKeyboardHideBlur();
@@ -4479,17 +4431,6 @@ async function EditorManager($header, $body) {
 		contentDOM.addEventListener("blur", handleContentBlur);
 		contentDOM.addEventListener("keydown", handleContentKeydown);
 		contentDOM.addEventListener("pointerdown", handleContentPointerDown, true);
-		document.addEventListener("pointerdown", handleDocumentPointerDown, true);
-		document.addEventListener(
-			"pointerup",
-			scheduleReadOnlyNativeContextRelease,
-			true,
-		);
-		document.addEventListener(
-			"pointercancel",
-			scheduleReadOnlyNativeContextRelease,
-			true,
-		);
 
 		pane.cleanupEditorListeners = () => {
 			scroller?.removeEventListener("scroll", handleEditorScroll);
@@ -4504,22 +4445,6 @@ async function EditorManager($header, $body) {
 				handleContentPointerDown,
 				true,
 			);
-			document.removeEventListener(
-				"pointerdown",
-				handleDocumentPointerDown,
-				true,
-			);
-			document.removeEventListener(
-				"pointerup",
-				scheduleReadOnlyNativeContextRelease,
-				true,
-			);
-			document.removeEventListener(
-				"pointercancel",
-				scheduleReadOnlyNativeContextRelease,
-				true,
-			);
-			releaseReadOnlyNativeContext();
 			clearTimeout(scrollTimeout);
 			if (scrollSyncRaf) {
 				cancelAnimationFrame(scrollSyncRaf);
@@ -4651,6 +4576,7 @@ async function EditorManager($header, $body) {
 	function onscrollV(value) {
 		const scroller = editor?.scrollDOM;
 		if (!scroller) return;
+		markKeyboardScrollBrowsing(editor);
 		suppressCursorReveal();
 		const normalized = clamp01(value);
 		const maxScroll = Math.max(
@@ -4681,6 +4607,7 @@ async function EditorManager($header, $body) {
 		if (appSettings.value.textWrap) return;
 		const scroller = editor?.scrollDOM;
 		if (!scroller) return;
+		markKeyboardScrollBrowsing(editor);
 		suppressCursorReveal();
 		const normalized = clamp01(value);
 		const maxScroll = Math.max(scroller.scrollWidth - scroller.clientWidth, 0);

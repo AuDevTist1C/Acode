@@ -6,6 +6,7 @@ import {
 	reconfigureEditorReadOnly,
 } from "cm/editorReadOnly";
 import { clearSelection, getDocText } from "cm/editorUtils";
+import { waitForFileLanguage } from "cm/fileLanguage";
 import { getMode, getModeForPath } from "cm/modelist";
 import quickTools from "components/quickTools";
 import Sidebar from "components/sidebar";
@@ -1911,6 +1912,8 @@ export default class EditorFile {
 				}
 			}
 
+			if (!this.#tab) return;
+			await waitForFileLanguage(this);
 			if (!this.#tab) return;
 			const isUnsaved = this.isUnsaved;
 			this.markChanged = false;
