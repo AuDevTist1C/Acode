@@ -28,6 +28,8 @@ import Contextmenu from "components/contextmenu";
 import Sidebar from "components/sidebar";
 import tile from "components/tile";
 import toast from "components/toast";
+import { initIconTooltips } from "components/tooltip";
+import alert from "dialogs/alert";
 import confirm from "dialogs/confirm";
 import intentHandler, { processPendingIntents } from "handlers/intent";
 import keyboardHandler, { keydownState } from "handlers/keyboard";
@@ -43,6 +45,7 @@ import { canSaveFile } from "lib/commands";
 import config from "lib/config";
 import EditorFile from "lib/editorFile";
 import EditorManager from "lib/editorManager";
+import fileIcons from "lib/fileIcons";
 import { initFileList } from "lib/fileList";
 import fonts from "lib/fonts";
 import lang from "lib/lang";
@@ -310,6 +313,8 @@ async function onDeviceReady() {
 
 	acode.setLoadingMessage("Loading settings...");
 	await settings.init();
+	fileIcons.bindSettings(settings);
+	fileIcons.syncFromSettings();
 	themes.init();
 	initHighlighting();
 
@@ -322,7 +327,15 @@ async function onDeviceReady() {
 	await lang.set(settings.value.lang);
 
 	acode.setLoadingMessage("Securing SFTP profiles...");
-	await migrateLegacySftpProfiles();
+	const sftpMigration = await migrateLegacySftpProfiles();
+	if (sftpMigration.failures.length) {
+		for (const failure of sftpMigration.failures) {
+			logger.log(
+				"error",
+				`SFTP profile migration failed for ${failure.username}@${failure.hostname}: ${failure.message}`,
+			);
+		}
+	}
 
 	if (settings.value.developerMode) {
 		try {
@@ -335,6 +348,9 @@ async function onDeviceReady() {
 
 	try {
 		await loadApp();
+		if (sftpMigration.failures.length) {
+			showSftpMigrationReport(sftpMigration);
+		}
 	} catch (error) {
 		window.log("error", error);
 		toast(`Error: ${error.message}`);
@@ -346,6 +362,7 @@ async function onDeviceReady() {
 			// load plugins
 			try {
 				await loadPlugins();
+				fileIcons.refreshRenderedIcons();
 				// Ensure at least one sidebar app is active after all plugins are loaded
 				// This handles cases where the stored section was from an uninstalled plugin
 				sidebarApps.ensureActiveApp();
@@ -359,8 +376,9 @@ async function onDeviceReady() {
 				}
 				editorManager.reapplyActiveFile();
 				if (activeFile?.uri) {
-					// Re-emit file-loaded event
-					editorManager.emit("file-loaded", activeFile);
+					if (activeFile.loaded && !activeFile.loading) {
+						editorManager.emit("file-loaded", activeFile);
+					}
 					// Re-emit switch-file event
 					editorManager.emit("switch-file", activeFile);
 				}
@@ -368,6 +386,8 @@ async function onDeviceReady() {
 				window.log("error", "Failed to load plugins!");
 				window.log("error", error);
 				toast("Failed to load plugins!");
+			} finally {
+				void processPendingIntents().catch(intentHandler.onError);
 			}
 			applySettings.afterRender();
 
@@ -479,6 +499,36 @@ async function onDeviceReady() {
 			);
 		})
 		.catch(console.error);
+}
+
+function showSftpMigrationReport({
+	failures,
+	removedReferences,
+	recoveredFiles,
+}) {
+	const details = failures
+		.map(
+			({ username, hostname, message }) =>
+				`${escapeHtml(username)}@${escapeHtml(hostname)}: ${escapeHtml(message)}`,
+		)
+		.join("<br>");
+	const recoveryMessage = recoveredFiles
+		? `<br><br>${recoveredFiles} unsaved remote file${recoveredFiles === 1 ? " was" : "s were"} kept as a recovery tab.`
+		: "";
+
+	alert(
+		"Some SFTP connections were removed",
+		`Acode could not move ${failures.length} saved SFTP connection${failures.length === 1 ? "" : "s"} into encrypted storage. The affected connection data and ${removedReferences} saved reference${removedReferences === 1 ? " were" : "s were"} removed so Acode could start safely. Please add the connection${failures.length === 1 ? "" : "s"} again.<br><br>${details}${recoveryMessage}`,
+	);
+}
+
+function escapeHtml(value) {
+	return String(value)
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#039;");
 }
 
 async function onLogin() {
@@ -629,12 +679,7 @@ async function loadApp() {
 			$mainMenu.removeEventListener("click", handleMenu);
 			$mainMenu.destroy();
 		}
-		const { openFileListPos, fullscreen } = settings.value;
-		if (openFileListPos === settings.OPEN_FILE_LIST_POS_BOTTOM && fullscreen) {
-			$mainMenu = createMainMenu({ bottom: "6px", toggler: $menuToggler });
-		} else {
-			$mainMenu = createMainMenu({ top: "6px", toggler: $menuToggler });
-		}
+		$mainMenu = createMainMenu({ top: "6px", toggler: $menuToggler });
 		$mainMenu.addEventListener("click", handleMenu);
 	};
 
@@ -643,12 +688,7 @@ async function loadApp() {
 			$fileMenu.removeEventListener("click", handleMenu);
 			$fileMenu.destroy();
 		}
-		const { openFileListPos, fullscreen } = settings.value;
-		if (openFileListPos === settings.OPEN_FILE_LIST_POS_BOTTOM && fullscreen) {
-			$fileMenu = createFileMenu({ bottom: "6px", toggler: $editMenuToggler });
-		} else {
-			$fileMenu = createFileMenu({ top: "6px", toggler: $editMenuToggler });
-		}
+		$fileMenu = createFileMenu({ top: "6px", toggler: $editMenuToggler });
 		$fileMenu.addEventListener("click", handleMenu);
 	};
 
@@ -672,6 +712,7 @@ async function loadApp() {
 	//#region Add event listeners
 	initModes();
 	quickToolsInit();
+	editorManager.on("switch-file", initIconTooltips());
 	sidebarApps.init($sidebar);
 	await sidebarApps.loadApps();
 	editorManager.onupdate = onEditorUpdate;

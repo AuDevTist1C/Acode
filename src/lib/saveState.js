@@ -3,8 +3,36 @@ import config from "./config";
 import { addedFolder } from "./openFolder";
 import appSettings from "./settings";
 
-export default () => {
+let deferDepth = 0;
+let deferredSave = false;
+
+/**
+ * Runs `task` while coalescing every session save it triggers into a single
+ * save once it finishes, so bulk tab operations don't re-serialize all open
+ * files per tab.
+ * @template T
+ * @param {() => Promise<T>|T} task
+ * @returns {Promise<T>}
+ */
+export async function deferSaveState(task) {
+	deferDepth++;
+	try {
+		return await task();
+	} finally {
+		deferDepth--;
+		if (!deferDepth && deferredSave) {
+			deferredSave = false;
+			saveState();
+		}
+	}
+}
+
+export default function saveState() {
 	if (!window.editorManager) return;
+	if (deferDepth) {
+		deferredSave = true;
+		return;
+	}
 
 	const filesToSave = [];
 	const folders = [];
@@ -20,7 +48,9 @@ export default () => {
 		// - Active file uses live EditorView selection
 		// - Inactive files use their persisted EditorState selection
 		let cursorPos;
-		if (activeFile?.id === file.id) {
+		if (!file.loaded && file.restoredSelection) {
+			cursorPos = file.restoredSelection;
+		} else if (activeFile?.id === file.id) {
 			cursorPos = getSelection(editor);
 		} else {
 			const sel = file.session?.selection;
@@ -39,7 +69,12 @@ export default () => {
 		// - Active file uses live scroll from EditorView
 		// - Inactive files use lastScrollTop/Left captured on tab switch
 		let scrollTop, scrollLeft;
-		if (activeFile?.id === file.id) {
+		if (!file.loaded) {
+			scrollTop =
+				typeof file.lastScrollTop === "number" ? file.lastScrollTop : 0;
+			scrollLeft =
+				typeof file.lastScrollLeft === "number" ? file.lastScrollLeft : 0;
+		} else if (activeFile?.id === file.id) {
 			const sp = getScrollPosition(editor);
 			scrollTop = sp.scrollTop;
 			scrollLeft = sp.scrollLeft;
@@ -72,7 +107,7 @@ export default () => {
 			editable: file.editable,
 			encoding: file.encoding,
 			render: activeFile?.id === file.id,
-			folds: getAllFolds(file.session),
+			folds: file.restoredFolds ?? getAllFolds(file.session),
 		};
 
 		if (settings.rememberFiles || fileJson.isUnsaved)
@@ -96,7 +131,7 @@ export default () => {
 
 	localStorage.files = JSON.stringify(filesToSave);
 	localStorage.folders = JSON.stringify(folders);
-};
+}
 
 function collapseSelectionForRestore(selection) {
 	if (!selection?.ranges?.length) return selection;
