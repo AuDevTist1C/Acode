@@ -1,0 +1,411 @@
+import {
+	type CanvasThemeSpec,
+	CanvasView,
+	type CanvasViewConfig,
+	type FontSpec,
+	parseColor,
+	type TokenStyleSpec,
+} from "@acode.app/canvas-view";
+import { tags as t } from "@lezer/highlight";
+import { getRainbowBracketColors } from "cm/rainbowBrackets";
+import { getThemeById, getThemeConfig } from "cm/themes";
+
+/**
+ * Maps Acode's editor settings and themes to @acode.app/canvas-view options.
+ *
+ * The canvas renderer draws line numbers, fold markers, the active line,
+ * indent guides, rainbow brackets, whitespace, wrapping and scroll room
+ * itself, so editorManager leaves those CodeMirror extensions out of the
+ * state and passes the options built here instead.
+ */
+
+export type CanvasDisplayOptions = Parameters<CanvasView["reconfigure"]>[0];
+
+type Settings = Record<string, any>;
+
+interface ThemeConfig {
+	dark?: boolean;
+	background?: string;
+	foreground?: string;
+	selection?: string;
+	cursor?: string;
+	activeLine?: string;
+	lineNumber?: string;
+	lineNumberActive?: string;
+	gutterBorder?: string;
+	matchingBracket?: string;
+	selectionMatch?: string;
+	[color: string]: unknown;
+}
+
+const SCROLL_PAST_END: Record<string, number> = {
+	none: 0,
+	small: 0.25,
+	medium: 0.5,
+	full: 1,
+};
+
+const SCROLL_SPEED: Record<string, CanvasViewConfig["scrollSpeed"]> = {
+	SLOW: "slow",
+	NORMAL: "normal",
+	FAST: "fast",
+	FAST_X2: "fastX2",
+};
+
+const GUTTER_MARKERS = ["shared", "columns", "overlay"] as const;
+
+/** A finite number within [min, max], else the fallback. */
+function clampSetting(
+	value: unknown,
+	min: number,
+	max: number,
+	fallback: number,
+): number {
+	const number = Number(value);
+	if (value == null || value === "" || !Number.isFinite(number)) {
+		return fallback;
+	}
+	return Math.min(Math.max(Math.round(number), min), max);
+}
+
+/** Token colors from a theme config, for themes without a HighlightStyle. */
+function highlightFromConfig(config: ThemeConfig): TokenStyleSpec[] {
+	const color = (key: string) =>
+		typeof config[key] === "string" ? (config[key] as string) : undefined;
+	const specs: TokenStyleSpec[] = [
+		{ tag: t.variableName, color: color("variable") },
+		{ tag: [t.keyword, t.modifier], color: color("keyword") },
+		{ tag: [t.string, t.special(t.string)], color: color("string") },
+		{ tag: [t.number, t.bool, t.null], color: color("number") },
+		{ tag: t.comment, color: color("comment"), fontStyle: "italic" },
+		{
+			tag: [t.function(t.variableName), t.function(t.propertyName)],
+			color: color("function"),
+		},
+		{ tag: t.typeName, color: color("type") },
+		{ tag: t.className, color: color("class") ?? color("type") },
+		{
+			tag: [t.constant(t.variableName), t.standard(t.variableName)],
+			color: color("constant"),
+		},
+		{ tag: t.operator, color: color("operator") },
+		{ tag: t.invalid, color: color("invalid") },
+	];
+	return specs.filter((spec) => spec.color);
+}
+
+/** What `CanvasView`'s `theme` option and `setTheme` take. */
+export type CanvasThemeSource = NonNullable<CanvasViewConfig["theme"]>;
+
+/**
+ * The canvas theme for an Acode editor theme. canvas-view resolves the
+ * colors itself from the theme's own CSS (the `EditorView.theme` and
+ * highlight style in the state: background, text, cursor, selection, active
+ * line fill or frame, gutter, line numbers, matching brackets, selection
+ * matches), like the DOM editor shows them, and again when the theme
+ * compartment changes. The CSS is the only source for those: a theme's
+ * config doesn't override it, so both renderers draw a theme the same.
+ * This adds what the CSS doesn't say: Acode's own scrollbars, a
+ * see-through canvas over a picture, the gutter border and config-only
+ * syntax colors.
+ */
+export function getCanvasTheme(
+	themeId: string,
+	seeThrough = false,
+): CanvasThemeSource {
+	// Resolve ids like getThemeExtensions does ("one-dark" -> "one_dark").
+	const theme =
+		getThemeById(themeId) || getThemeById(String(themeId).replace(/-/g, "_"));
+	const config = (theme?.config ||
+		getThemeConfig(themeId) ||
+		{}) as ThemeConfig;
+	// Only used for a theme without a highlight style in its extensions.
+	const highlight = highlightFromConfig(config);
+	return (css: CanvasThemeSpec): CanvasThemeSpec => {
+		const framed = !!css.activeLineBorder;
+		return {
+			...css,
+			...(highlight.length ? { highlight } : null),
+			// With a picture behind the editor, the canvas is see-through. The
+			// editor element keeps the theme's CSS background under the
+			// picture, and sticky lines take it from there.
+			background: seeThrough ? "transparent" : css.background,
+			activeLine:
+				seeThrough && !framed
+					? translucentActiveLine(css.activeLine, css.foreground)
+					: css.activeLine,
+			// Like the DOM themes, which give the active gutter line no background.
+			activeLineGutter: seeThrough
+				? "transparent"
+				: (css.activeLineGutter ?? css.background),
+			gutterBackground: seeThrough ? undefined : css.gutterBackground,
+			// A line between the gutter and the code, when the theme asks.
+			gutterBorder: config.gutterBorder ?? css.gutterBorder,
+			// Acode draws its own (draggable) scrollbars over the editor.
+			scrollbar: "transparent",
+		};
+	};
+}
+
+/**
+ * An active line that lets a picture behind the editor show: the theme's
+ * own when it already does, otherwise the text color at 8% (what the
+ * Backdrop plugin gives `.cm-activeLine` in the DOM editor).
+ */
+function translucentActiveLine(
+	activeLine: string | undefined,
+	foreground: string,
+): string {
+	if (activeLine && parseColor(activeLine) >>> 24 < 255) return activeLine;
+	const c = parseColor(foreground);
+	return `rgba(${c & 255}, ${(c >>> 8) & 255}, ${(c >>> 16) & 255}, 0.08)`;
+}
+
+/**
+ * Whether something draws a picture behind the editor's text, as the
+ * Backdrop plugin does with `.cm-editor::before` (the DOM editor's text has
+ * no background of its own, so it shows). A canvas view then needs a
+ * see-through background. Reads computed style: call it outside frames.
+ */
+export function hasPictureBehind(view: CanvasView): boolean {
+	if (!view.dom.isConnected) return false;
+	const before = getComputedStyle(view.dom, "::before");
+	return (
+		before.content !== "none" &&
+		before.content !== "normal" &&
+		before.display !== "none" &&
+		before.backgroundImage !== "none" &&
+		Number(before.opacity) > 0
+	);
+}
+
+/**
+ * Call `onChange` (at most once per frame) when style sheets are added,
+ * removed or rewritten, which is how plugins restyle the editor (Backdrop
+ * keeps one `<style>` element up to date). Returns a function that stops.
+ */
+export function watchEditorStyles(onChange: () => void): () => void {
+	let frame = 0;
+	const isStyle = (node: Node | null) =>
+		node instanceof HTMLStyleElement || node instanceof HTMLLinkElement;
+	const observer = new MutationObserver((records) => {
+		const relevant = records.some(
+			(r) =>
+				isStyle(r.target) ||
+				isStyle(r.target.parentNode) ||
+				[...r.addedNodes, ...r.removedNodes].some(isStyle),
+		);
+		if (!relevant || frame) return;
+		frame = requestAnimationFrame(() => {
+			frame = 0;
+			onChange();
+		});
+	});
+	const options = { childList: true, subtree: true, characterData: true };
+	observer.observe(document.head, options);
+	// Style elements put straight into <body> (not its whole subtree: the
+	// editor's own DOM changes all the time).
+	observer.observe(document.body, { childList: true });
+	return () => {
+		observer.disconnect();
+		if (frame) cancelAnimationFrame(frame);
+	};
+}
+
+/** A CSS font size ("12px", "1rem", "10pt"...) in CSS pixels. */
+export function fontSizeToPx(value: unknown): number {
+	const match = /^([\d.]+)\s*([a-z]*)$/i.exec(String(value ?? "").trim());
+	if (!match) return 12;
+	const size = Number.parseFloat(match[1]);
+	if (!Number.isFinite(size) || size <= 0) return 12;
+	const unit = match[2].toLowerCase();
+	const rootSize = () =>
+		Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
+		16;
+	switch (unit) {
+		case "pt":
+			return (size * 4) / 3;
+		case "pc":
+			return size * 16;
+		case "in":
+			return size * 96;
+		case "mm":
+			return (size * 96) / 25.4;
+		case "em":
+		case "rem":
+			return size * rootSize();
+		default:
+			return size;
+	}
+}
+
+/** Same font size and line height as `makeFontTheme` gives the DOM editor. */
+export function getCanvasFont(settings: Settings, family: string): FontSpec {
+	const lineHeight = Number(settings.lineHeight);
+	return {
+		family,
+		size: fontSizeToPx(settings.fontSize || "12px"),
+		lineHeight:
+			Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 1.4,
+	};
+}
+
+/** Display options from Acode's editor settings (the live ones). */
+export function getCanvasDisplayOptions(
+	settings: Settings,
+	{
+		themeId,
+		onLineNumberClick,
+	}: {
+		themeId: string;
+		onLineNumberClick?: CanvasViewConfig["onLineNumberClick"];
+	},
+): CanvasDisplayOptions {
+	const { linenumbers = true, relativeLineNumbers = false } = settings;
+	const cursorWidth = Number(settings.cursorWidth);
+	const showSpaces = !!settings.showSpaces;
+	const rainbow = settings.rainbowBrackets ?? true;
+	return {
+		lineNumbers: linenumbers
+			? relativeLineNumbers
+				? "relative"
+				: true
+			: false,
+		onLineNumberClick,
+		foldMarkers:
+			settings.codeFolding === false
+				? "none"
+				: settings.fadeFoldWidgets
+					? "fade"
+					: "always",
+		highlightActiveLine: settings.highlightActiveLine !== false,
+		cursorWidth:
+			Number.isFinite(cursorWidth) && cursorWidth > 0
+				? Math.min(cursorWidth, 10)
+				: 2,
+		// 0 keeps the cursor steady.
+		cursorBlinkRate: clampSetting(settings.cursorBlinkRate, 0, 10000, 1200),
+		gutterMarkers: GUTTER_MARKERS.includes(settings.canvasGutterMarkers)
+			? settings.canvasGutterMarkers
+			: "shared",
+		lineWrapping: !!settings.textWrap,
+		wrapIndent: settings.wrappingIndent ?? "same",
+		textDirection: settings.rtlText ? "auto" : "ltr",
+		horizontalScrollPastEnd: Number(settings.leftMargin ?? 50) || 0,
+		scrollPastEnd: SCROLL_PAST_END[settings.scrollPastEnd || "medium"] ?? 1,
+		scrollSpeed: SCROLL_SPEED[settings.scrollSpeed] ?? "normal",
+		// Unlike the DOM editor's guides, the block around the cursor is
+		// highlighted: it's one rect per frame on the canvas.
+		indentGuides: settings.indentGuides ? { active: true } : false,
+		rainbowBrackets: rainbow
+			? { colors: getRainbowBracketColors(getThemeConfig(themeId)) }
+			: false,
+		showWhitespace: showSpaces
+			? { spaces: true, trailing: true, lineBreaks: true }
+			: false,
+		stickyScroll: settings.stickyScroll
+			? { maxLines: clampSetting(settings.stickyScrollMaxLines, 1, 10, 5) }
+			: false,
+	};
+}
+
+const CANVAS_BACKENDS = ["auto", "webgl2", "webgpu"] as const;
+
+/** The GPU API for new canvas views ("webgpu" falls back to WebGL2). */
+export function getCanvasBackend(
+	settings: Settings,
+): CanvasViewConfig["backend"] {
+	const value = settings.canvasBackend;
+	return CANVAS_BACKENDS.includes(value) ? value : "auto";
+}
+
+interface CanvasSyncState {
+	display?: string;
+	font?: string;
+	theme?: string;
+}
+
+const synced = new WeakMap<CanvasView, CanvasSyncState>();
+
+const themeEntryIds = new WeakMap<object, number>();
+let nextThemeEntryId = 1;
+
+/**
+ * Which registered theme an id resolves to, for the sync key. A plugin
+ * theme is registered after the editor is created: until then its id falls
+ * back to One Dark's colors, and applying the same id again once it's
+ * registered must rebuild the canvas theme (it used to be skipped, leaving
+ * a cold-started canvas editor in One Dark's colors).
+ */
+function themeEntryKey(themeId: string): string {
+	const entry =
+		getThemeById(themeId) || getThemeById(String(themeId).replace(/-/g, "_"));
+	if (!entry) return "0";
+	let n = themeEntryIds.get(entry);
+	if (!n) themeEntryIds.set(entry, (n = nextThemeEntryId++));
+	return String(n);
+}
+// Acode replaces `setTheme` on editor instances with its own (taking a theme
+// id), so the view's method is called through the prototype.
+const setViewTheme = CanvasView.prototype.setTheme;
+
+/**
+ * Bring a canvas view in line with the settings. Each part is applied only
+ * when it changed: reconfiguring resets the drawn scene, and a new font or a
+ * dark/light switch rebuilds the glyph atlas.
+ */
+export function syncCanvasView(
+	view: CanvasView,
+	{
+		display,
+		font,
+		themeId,
+	}: { display?: CanvasDisplayOptions; font?: FontSpec; themeId?: string },
+): void {
+	let state = synced.get(view);
+	if (!state) {
+		state = {};
+		synced.set(view, state);
+	}
+	if (display) {
+		// Functions (onLineNumberClick) are left out of the key: they read
+		// settings when called.
+		const key = JSON.stringify(display);
+		if (key !== state.display) {
+			state.display = key;
+			view.reconfigure(display);
+		}
+	}
+	if (font) {
+		const key = JSON.stringify(font);
+		if (key !== state.font) {
+			state.font = key;
+			view.setFont(font);
+		}
+	}
+	if (themeId != null) {
+		const id = String(themeId);
+		const seeThrough = hasPictureBehind(view);
+		const key = `${id}\0${seeThrough}\0${themeEntryKey(id)}`;
+		if (key !== state.theme) {
+			state.theme = key;
+			setViewTheme.call(view, getCanvasTheme(id, seeThrough));
+		}
+	}
+}
+
+/** Remember what a new view was created with, so syncing skips it. */
+export function markCanvasViewSynced(
+	view: CanvasView,
+	{
+		display,
+		font,
+		themeId,
+	}: { display: CanvasDisplayOptions; font: FontSpec; themeId: string },
+): void {
+	synced.set(view, {
+		display: JSON.stringify(display),
+		font: JSON.stringify(font),
+		theme: `${themeId}\0false\0${themeEntryKey(String(themeId))}`,
+	});
+}

@@ -1,3 +1,4 @@
+import type { Language } from "@codemirror/language";
 import type {
 	LSPClient,
 	LSPClientConfig,
@@ -6,7 +7,6 @@ import type {
 	Workspace,
 	WorkspaceFile,
 } from "@codemirror/lsp-client";
-import type { Language } from "@codemirror/language";
 import type { ChangeSet, Extension, MapMode, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 
@@ -631,13 +631,8 @@ export interface LSPPluginAPI {
 	client: LSPClient & { sync: () => void; connected?: boolean };
 	/** Convert a document offset to an LSP Position */
 	toPosition: (offset: number) => { line: number; character: number };
-	/** Convert an LSP Position to a document offset */
-	fromPosition: (
-		pos: { line: number; character: number },
-		doc?: unknown,
-	) => number;
 	/** The currently synced document state */
-	syncedDoc: { length: number };
+	syncedDoc: Text;
 	/** Pending changes that haven't been synced yet */
 	unsyncedChanges: {
 		mapPos: (pos: number, assoc?: number, mode?: MapMode) => number | null;

@@ -140,6 +140,31 @@ function hasCodeActionProvider(view) {
 	);
 }
 
+function hasLspActions(view) {
+	const capabilities = [
+		["definition", "definitionProvider"],
+		["declaration", "declarationProvider"],
+		["implementation", "implementationProvider"],
+		["typeDefinition", "typeDefinitionProvider"],
+		["references", "referencesProvider"],
+	];
+	if (
+		capabilities.some(([feature, capability]) =>
+			LSPPlugin.getAll(view, feature).some(
+				(plugin) => !!plugin.client.serverCapabilities?.[capability],
+			),
+		)
+	) {
+		return true;
+	}
+	return (
+		!view.state.readOnly &&
+		LSPPlugin.getAll(view, "rename").some(
+			(plugin) => !!plugin.client.serverCapabilities?.renameProvider,
+		)
+	);
+}
+
 function animationsDisabled() {
 	return (
 		document.body.classList.contains("no-animation") ||
@@ -149,6 +174,17 @@ function animationsDisabled() {
 
 export default function createTouchSelectionMenu(view, options = {}) {
 	return new TouchSelectionMenuController(view, options);
+}
+
+/**
+ * The selection menu for a canvas editor (@acode.app/canvas-view). The view owns
+ * the touch selection gestures and handles, and asks for the menu through its
+ * `touchSelection.onMenu` hook, which goes to `handleCanvasMenu()`. Only the
+ * menu UI (items, layout, actions) is shared with the DOM editor's controller,
+ * so it listens to no pointer or selection events of its own.
+ */
+export function createCanvasSelectionMenu(view, options = {}) {
+	return new TouchSelectionMenuController(view, { ...options, canvas: true });
 }
 
 class TouchSelectionMenuController {
@@ -174,9 +210,12 @@ class TouchSelectionMenuController {
 	#menuAnchor = null;
 	#menuAnimation = null;
 	#viewAnimations = [];
+	#overflowExpanded = false;
+	#canvas = false;
 
 	constructor(view, options = {}) {
 		this.#view = view;
+		this.#canvas = !!options.canvas;
 		this.#container =
 			options.container || view.dom.closest(".editor-container") || view.dom;
 		this.#getActiveFile = options.getActiveFile || (() => null);
@@ -191,11 +230,19 @@ class TouchSelectionMenuController {
 
 	#bindEvents() {
 		const root = this.#view.dom;
-		root.addEventListener("contextmenu", this.#onContextMenu, true);
-		document.addEventListener("pointerdown", this.#onGlobalPointerDown, true);
-		document.addEventListener("pointermove", this.#onGlobalPointerMove, true);
-		document.addEventListener("pointerup", this.#onGlobalPointerUp, true);
-		document.addEventListener("pointercancel", this.#onGlobalPointerUp, true);
+		if (this.#canvas) {
+			document.addEventListener(
+				"pointerdown",
+				this.#onCanvasOutsidePointerDown,
+				true,
+			);
+		} else {
+			root.addEventListener("contextmenu", this.#onContextMenu, true);
+			document.addEventListener("pointerdown", this.#onGlobalPointerDown, true);
+			document.addEventListener("pointermove", this.#onGlobalPointerMove, true);
+			document.addEventListener("pointerup", this.#onGlobalPointerUp, true);
+			document.addEventListener("pointercancel", this.#onGlobalPointerUp, true);
+		}
 
 		this.#tooltipObserver = new MutationObserver((mutations) => {
 			const relevant = mutations.some((m) =>
@@ -205,9 +252,13 @@ class TouchSelectionMenuController {
 						(n.matches?.(".cm-tooltip") || n.querySelector?.(".cm-tooltip")),
 				),
 			);
-			if (!relevant || !this.#menuActive || !this.#shouldShowMenu()) {
+			if (!relevant || !this.#menuActive) return;
+			if (this.#canvas) {
+				// Keep the menu where the view asked for it, clear of the tooltip.
+				if (this.#menuAnchor) this.#positionMenu(this.#menuAnchor);
 				return;
 			}
+			if (!this.#shouldShowMenu()) return;
 			this.#showMenuDeferred();
 		});
 		this.#tooltipObserver.observe(this.#view.dom, {
@@ -218,6 +269,11 @@ class TouchSelectionMenuController {
 
 	destroy() {
 		const root = this.#view.dom;
+		document.removeEventListener(
+			"pointerdown",
+			this.#onCanvasOutsidePointerDown,
+			true,
+		);
 		root.removeEventListener("contextmenu", this.#onContextMenu, true);
 		document.removeEventListener(
 			"pointerdown",
@@ -259,10 +315,15 @@ class TouchSelectionMenuController {
 		cancelAnimationFrame(this.#stateSyncRaf);
 		this.#stateSyncRaf = 0;
 		this.#hideMenu(true);
+		if (this.#canvas) this.#view.touchSelection?.hideMenu();
 	}
 
 	setSelection(value) {
 		if (!this.#enabled) return;
+		if (this.#canvas) {
+			if (value) this.#view.touchSelection?.openMenu();
+			return;
+		}
 		if (value) {
 			this.#dismissedSelection = null;
 			this.#menuRequested = true;
@@ -276,6 +337,11 @@ class TouchSelectionMenuController {
 	setMenu(value) {
 		this.#menuRequested = !!value;
 		if (!this.#enabled) return;
+		if (this.#canvas) {
+			if (value) this.#view.touchSelection?.openMenu();
+			else this.#view.touchSelection?.hideMenu();
+			return;
+		}
 		if (!value) {
 			this.#clearMenuShowTimer();
 			this.#hideMenu();
@@ -290,7 +356,8 @@ class TouchSelectionMenuController {
 	}
 
 	onScrollStart() {
-		if (!this.#enabled) return;
+		// A canvas view hides and re-shows the menu around its own scrolls.
+		if (!this.#enabled || this.#canvas) return;
 		if (this.#isScrolling) return;
 		this.#clearMenuShowTimer();
 		this.#isScrolling = true;
@@ -299,13 +366,15 @@ class TouchSelectionMenuController {
 	}
 
 	onScrollEnd() {
-		if (!this.#enabled || !this.#isScrolling) return;
+		if (!this.#enabled || this.#canvas || !this.#isScrolling) return;
 		this.#isScrolling = false;
 		if (this.#shouldShowMenu()) this.#scheduleMenuShow(MENU_SHOW_DELAY);
 	}
 
 	onStateChanged(meta = {}) {
-		if (!this.#enabled) return;
+		// A canvas view drops its menu itself on keyboard input and outside
+		// selection changes.
+		if (!this.#enabled || this.#canvas) return;
 		if (meta.selectionChanged) this.#cancelReadOnlyTap();
 		if (
 			meta.selectionChanged &&
@@ -338,7 +407,43 @@ class TouchSelectionMenuController {
 		this.#isScrolling = false;
 		this.#clearMenuShowTimer();
 		this.#hideMenu(true);
+		if (this.#canvas) this.#view.touchSelection?.hideMenu();
 	}
+
+	/**
+	 * A canvas view's `touchSelection.onMenu` event: show the menu over the
+	 * selection (or caret) it reports, or hide it. Hides during scrolls and
+	 * handle drags are transient; the view sends "show" again when they end.
+	 */
+	handleCanvasMenu(event) {
+		if (!this.#canvas) return;
+		if (event?.type !== "show") {
+			this.#hideMenu();
+			return;
+		}
+		if (!this.#enabled) return;
+		const rect = event.selectionRect;
+		if (!rect) return;
+		this.#showMenu({
+			x: rect.left + rect.width / 2,
+			top: rect.top,
+			bottom: rect.bottom,
+			hasSelection: event.trigger === "selection",
+		});
+	}
+
+	#onCanvasOutsidePointerDown = (event) => {
+		if (!this.#menuActive) return;
+		const target = event.target;
+		if (
+			target instanceof Node &&
+			(this.$menu.contains(target) || this.#view.dom.contains(target))
+		) {
+			return;
+		}
+		this.#hideMenu();
+		this.#view.touchSelection?.hideMenu();
+	};
 
 	#onContextMenu = (event) => {
 		if (!this.#enabled) return;
@@ -664,6 +769,7 @@ class TouchSelectionMenuController {
 		const items = filterSelectionMenuItems(
 			selectionMenu({
 				codeActionsAvailable: hasCodeActionProvider(this.#view),
+				lspActionsAvailable: hasLspActions(this.#view),
 			}),
 			{
 				readOnly: this.#isReadOnly(),
@@ -680,7 +786,8 @@ class TouchSelectionMenuController {
 		const menuKey = `${hasSelection}:${items
 			.map((item) => item.id || this.#getItemLabel(item))
 			.join("|")}`;
-		if (menuKey !== this.#renderedMenuKey) {
+		const menuChanged = menuKey !== this.#renderedMenuKey;
+		if (menuChanged) {
 			const groups = partitionSelectionMenuItems(items, { hasSelection });
 			this.#renderMenu(groups.primary, groups.overflow);
 			this.#renderedMenuKey = menuKey;
@@ -689,6 +796,8 @@ class TouchSelectionMenuController {
 		if (!this.$menu.isConnected) {
 			this.#container.append(this.$menu);
 		}
+		this.$menu.style.removeProperty("width");
+		this.$menu.style.removeProperty("height");
 		const isOpening = !this.#menuActive;
 		this.#positionMenu(anchor);
 		this.#menuActive = true;
@@ -697,6 +806,11 @@ class TouchSelectionMenuController {
 	}
 
 	#renderMenu(primaryItems, overflowItems) {
+		for (const animation of this.#viewAnimations) animation.cancel?.();
+		this.#viewAnimations = [];
+		this.#overflowExpanded = false;
+		this.$menu.style.removeProperty("width");
+		this.$menu.style.removeProperty("height");
 		this.$menu.replaceChildren();
 		this.$menu.setAttribute("aria-label", "Text selection actions");
 
@@ -794,6 +908,7 @@ class TouchSelectionMenuController {
 				this.#menuRequested = false;
 				this.#dismissedSelection = this.#selectionSignature();
 				this.#hideMenu();
+				if (this.#canvas) this.#view.touchSelection?.hideMenu();
 				focusEditorIfEditable(this.#view);
 			}
 		};
@@ -822,68 +937,121 @@ class TouchSelectionMenuController {
 	}
 
 	#setOverflowExpanded($primary, $overflow, expanded) {
+		if (expanded === this.#overflowExpanded) return;
+		const initialRect = this.$menu.getBoundingClientRect();
+		this.#menuAnimation?.cancel?.();
+		this.#menuAnimation = null;
 		for (const animation of this.#viewAnimations) animation.cancel?.();
 		this.#viewAnimations = [];
-		const initialRect = this.$menu.getBoundingClientRect();
-		const outgoing = expanded ? $primary : $overflow;
+		$primary.hidden = this.#overflowExpanded;
+		$overflow.hidden = !this.#overflowExpanded;
+		const outgoing = this.#overflowExpanded ? $overflow : $primary;
 		const incoming = expanded ? $overflow : $primary;
 		const direction = expanded ? 1 : -1;
-		this.$menu.style.width = `${this.$menu.getBoundingClientRect().width}px`;
-		incoming.hidden = false;
-		incoming.style.visibility = "";
-		incoming.style.pointerEvents = "auto";
+		for (const $view of [$primary, $overflow]) {
+			$view.style.opacity = "";
+			$view.style.transform = "";
+			$view.style.visibility = "";
+			$view.style.position = "";
+			$view.style.inset = "";
+			$view.style.pointerEvents = "";
+			$view.style.transformOrigin = "";
+		}
+		this.#overflowExpanded = expanded;
+		outgoing.style.position = "absolute";
+		outgoing.style.inset = "0 auto auto 0";
 		outgoing.style.pointerEvents = "none";
-
-		const usesGrid = $overflow.classList.contains(
-			"cursor-menu__overflow--grid",
-		);
-		const targetHeight =
-			expanded && usesGrid ? $overflow.getBoundingClientRect().height : 40;
-		this.$menu.style.height = `${targetHeight}px`;
-		if (usesGrid && this.#menuAnchor) this.#positionMenu(this.#menuAnchor);
+		incoming.hidden = false;
+		this.$menu.style.removeProperty("width");
+		this.$menu.style.removeProperty("height");
+		this.$menu.style.transform = "";
+		if (this.#menuAnchor) this.#positionMenu(this.#menuAnchor);
 		const finalRect = this.$menu.getBoundingClientRect();
+		const menuScaleX = finalRect.width
+			? initialRect.width / finalRect.width
+			: 1;
+		const menuScaleY = finalRect.height
+			? initialRect.height / finalRect.height
+			: 1;
+		const viewScaleX = menuScaleX ? 1 / menuScaleX : 1;
+		const viewScaleY = menuScaleY ? 1 / menuScaleY : 1;
+		this.$menu.style.transformOrigin = "left top";
+		for (const $view of [outgoing, incoming]) {
+			$view.style.transformOrigin = "left top";
+		}
 
+		const clearMenuGeometry = () => {
+			this.$menu.style.removeProperty("width");
+			this.$menu.style.removeProperty("height");
+			this.$menu.style.transform = "";
+			this.$menu.style.transformOrigin = "";
+		};
 		const finish = () => {
 			outgoing.hidden = true;
-			outgoing.style.opacity = "";
-			outgoing.style.transform = "";
-			outgoing.style.visibility = "";
-			incoming.style.opacity = "";
-			incoming.style.transform = "";
-			this.$menu.style.height = `${targetHeight}px`;
-			this.$menu.style.transform = "";
+			for (const $view of [$primary, $overflow]) {
+				$view.style.opacity = "";
+				$view.style.transform = "";
+				$view.style.position = "";
+				$view.style.inset = "";
+				$view.style.pointerEvents = "";
+				$view.style.transformOrigin = "";
+			}
+			clearMenuGeometry();
 			this.#viewAnimations = [];
 		};
+
 		if (animationsDisabled()) {
 			finish();
 			return;
 		}
-
 		const outgoingAnimation = animate(
 			outgoing,
-			{ opacity: [1, 0], x: [0, -6 * direction] },
-			{ duration: 0.1, ease: "easeIn" },
+			{
+				opacity: [1, 0],
+				x: [0, -6 * direction],
+				scaleX: [viewScaleX, 1],
+				scaleY: [viewScaleY, 1],
+			},
+			{ duration: 0.12, ease: "easeIn" },
 		);
 		const incomingAnimation = animate(
 			incoming,
-			{ opacity: [0, 1], x: [6 * direction, 0] },
-			{ duration: 0.14, ease: "easeOut" },
+			{
+				opacity: [0, 1],
+				x: [6 * direction, 0],
+				scaleX: [viewScaleX, 1],
+				scaleY: [viewScaleY, 1],
+			},
+			{ duration: 0.18, ease: "easeOut" },
 		);
 		const animations = [outgoingAnimation, incomingAnimation];
-		if (usesGrid && initialRect.height !== finalRect.height) {
+		if (
+			initialRect.width !== finalRect.width ||
+			initialRect.height !== finalRect.height ||
+			initialRect.left !== finalRect.left ||
+			initialRect.top !== finalRect.top
+		) {
 			animations.push(
 				animate(
 					this.$menu,
 					{
-						height: [initialRect.height, finalRect.height],
+						x: [initialRect.left - finalRect.left, 0],
 						y: [initialRect.top - finalRect.top, 0],
+						scaleX: [menuScaleX, 1],
+						scaleY: [menuScaleY, 1],
 					},
-					{ duration: 0.16, ease: "easeOut" },
+					{
+						duration: 0.18,
+						ease: [0.2, 0, 0, 1],
+						onComplete: clearMenuGeometry,
+					},
 				),
 			);
 		}
 		this.#viewAnimations = animations;
-		Promise.allSettled(animations).then(() => {
+		Promise.allSettled(
+			animations.map((animation) => animation.finished ?? animation),
+		).then(() => {
 			if (this.#viewAnimations !== animations) return;
 			finish();
 		});
@@ -1044,6 +1212,9 @@ class TouchSelectionMenuController {
 			overflow.style.opacity = "";
 			overflow.style.transform = "";
 			overflow.style.pointerEvents = "";
+			overflow.style.position = "";
+			overflow.style.inset = "";
+			overflow.style.transformOrigin = "";
 		}
 		const primary = this.$menu.querySelector(".cursor-menu__primary");
 		if (primary) {
@@ -1051,15 +1222,20 @@ class TouchSelectionMenuController {
 			primary.style.opacity = "";
 			primary.style.transform = "";
 			primary.style.pointerEvents = "";
+			primary.style.position = "";
+			primary.style.inset = "";
+			primary.style.transformOrigin = "";
 		}
 		this.$menu.style.opacity = "";
 		this.$menu.style.transform = "";
-		this.$menu.style.width = "";
-		this.$menu.style.height = "40px";
+		this.$menu.style.transformOrigin = "";
+		this.$menu.style.removeProperty("width");
+		this.$menu.style.removeProperty("height");
 		this.$menu
 			.querySelector(".cursor-menu__more")
 			?.setAttribute("aria-expanded", "false");
 		this.#renderedMenuKey = "";
+		this.#overflowExpanded = false;
 		this.#menuAnchor = null;
 		this.#menuActive = false;
 	}

@@ -22,6 +22,7 @@ import lspClientManager from "cm/lsp/clientManager";
 import { registerLspFormatter } from "cm/lsp/formatter";
 import {
 	addMode,
+	getFormatAsMode,
 	getModeForPath,
 	getModes,
 	getModesByName,
@@ -51,10 +52,12 @@ import windowResize from "handlers/windowResize";
 import actionStack from "lib/actionStack";
 import commands from "lib/commands";
 import EditorFile from "lib/editorFile";
+import fileIcons from "lib/fileIcons";
 import fileIndex from "lib/fileIndex";
 import files from "lib/fileList";
 import fileTypeHandler from "lib/fileTypeHandler";
 import fonts from "lib/fonts";
+import fullscreen from "lib/fullscreen";
 import {
 	BROKEN_PLUGINS,
 	LOADED_PLUGINS,
@@ -63,6 +66,7 @@ import {
 } from "lib/loadPlugins";
 import notificationManager from "lib/notificationManager";
 import openFolder, { addedFolder } from "lib/openFolder";
+import orientation from "lib/orientation";
 import projects from "lib/projects";
 import selectionMenu from "lib/selectionMenu";
 import appSettings from "lib/settings";
@@ -84,6 +88,7 @@ import helpers from "utils/helpers";
 import KeyboardEvent from "utils/keyboardEvent";
 import Url from "utils/Url";
 import config from "./config";
+import quickToolsAdapters from "./quickToolsAdapter";
 import webview from "./webview";
 
 class Acode {
@@ -271,9 +276,10 @@ class Acode {
 		// Preferred CodeMirror language registration API for plugins
 		const editorLanguages = {
 			// name: string, extensions: string|Array<string>, caption?: string,
-			// loader?: () => Extension | Promise<Extension>
-			register: (name, extensions, caption, loader) =>
-				addMode(name, extensions, caption, loader),
+			// loader?: () => Extension | Promise<Extension>,
+			// options?: { aliases?, filenameMatchers?, formatAs? }
+			register: (name, extensions, caption, loader, options) =>
+				addMode(name, extensions, caption, loader, options),
 			unregister: (name) => removeMode(name),
 			add: (name, extensions, caption, loader) =>
 				addMode(name, extensions, caption, loader),
@@ -434,6 +440,8 @@ class Acode {
 		this.define("sidebarApps", sidebarAppsModule);
 		this.define("terminal", terminalModule);
 		this.define("webview", webview);
+		this.define("orientation", orientation);
+		this.define("fullscreen", fullscreen);
 		this.define("codemirror", codemirrorModule);
 		this.define("codeHighlight", codeHighlightModule);
 		this.define("@codemirror/autocomplete", cmAutocomplete);
@@ -558,6 +566,8 @@ class Acode {
 	}
 
 	require(module) {
+		if (module.toLowerCase() === "fileicons")
+			return fileIcons.getPluginApi(document.currentScript);
 		return this.#modules[module.toLowerCase()];
 	}
 
@@ -658,6 +668,9 @@ class Acode {
 										const purchase = await getPurchase(product.productId);
 										await fetch(Url.join(config.API_BASE, "plugin/order"), {
 											method: "POST",
+											headers: {
+												"Content-Type": "application/json",
+											},
 											body: JSON.stringify({
 												id: remotePlugin.id,
 												token: purchase?.purchaseToken,
@@ -785,6 +798,7 @@ class Acode {
 		}
 
 		delete appSettings.uiSettings[`plugin-${id}`];
+		fileIcons.unregisterByPlugin(id);
 	}
 
 	registerFormatter(id, extensions, format, displayName) {
@@ -832,7 +846,9 @@ class Acode {
 		}
 		const modeName = resolvedMode || "text";
 		const formatterMap = appSettings.value.formatter || {};
-		const formatterId = formatterMap[modeName];
+		const formatAs = getFormatAsMode(modeName);
+		const formatterId =
+			formatterMap[modeName] ?? (formatAs && formatterMap[formatAs]);
 		const formatter = this.#formatter.find(({ id }) => id === formatterId);
 
 		if (!formatter) {
@@ -1027,6 +1043,11 @@ class Acode {
 		const command = registerExternalCommand(descriptor);
 		this.#refreshCommandBindings();
 		return command;
+	}
+
+	/** Register input, selection and availability handlers for one custom tab. */
+	registerQuickToolsAdapter(tab, adapter) {
+		return quickToolsAdapters.register(tab, adapter);
 	}
 
 	removeCommand(name) {

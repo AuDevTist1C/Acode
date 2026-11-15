@@ -63,13 +63,7 @@ import {
 } from "@codemirror/lint";
 import {
 	LSPPlugin,
-	closeReferencePanel as lspCloseReferencePanel,
-	findReferences as lspFindReferences,
 	formatDocument as lspFormatDocument,
-	jumpToDeclaration as lspJumpToDeclaration,
-	jumpToDefinition as lspJumpToDefinition,
-	jumpToImplementation as lspJumpToImplementation,
-	jumpToTypeDefinition as lspJumpToTypeDefinition,
 } from "@codemirror/lsp-client";
 import { Compartment, EditorSelection } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
@@ -91,6 +85,10 @@ import {
 	renameSymbol as acodeRenameSymbol,
 	clearDiagnosticsEffect,
 	clientManager,
+	jumpToDeclaration as lspJumpToDeclaration,
+	jumpToDefinition as lspJumpToDefinition,
+	jumpToImplementation as lspJumpToImplementation,
+	jumpToTypeDefinition as lspJumpToTypeDefinition,
 	nextSignature as lspNextSignature,
 	prevSignature as lspPrevSignature,
 	showSignatureHelp as lspShowSignatureHelp,
@@ -1397,13 +1395,12 @@ function pasteCommand(view) {
 	const resolvedView = resolveView(view);
 	if (!resolvedView) return false;
 	cordova.plugins.clipboard.paste((text = "") => {
-		const insertText = String(text);
-		resolvedView.dispatch(
-			resolvedView.state.changeByRange((range) => ({
-				changes: { from: range.from, to: range.to, insert: insertText },
-				range: EditorSelection.cursor(range.from + insertText.length),
-			})),
-		);
+		// replaceSelection measures the inserted text after line-ending
+		// normalization, so CRLF clipboard text can't push the cursor past
+		// the end of the document.
+		resolvedView.dispatch(resolvedView.state.replaceSelection(String(text)), {
+			userEvent: "input.paste",
+		});
 	});
 	return true;
 }

@@ -42,8 +42,11 @@ module.exports = (env, options) => {
       test: /\.m?js$/,
       oneOf: [
         // Node modules - use builtin:swc-loader only
+        // The codemirror-lsp-client submodule is installed through a "file:"
+        // dependency, so it resolves to its real path outside node_modules. It
+        // still ships pre-built code and must not go through the source loaders.
         {
-          include: /node_modules/,
+          include: /[\\/](?:node_modules|codemirror-lsp-client)[\\/]/,
           use: [
             {
               loader: 'builtin:swc-loader',
@@ -197,6 +200,16 @@ module.exports = (env, options) => {
       new rspack.CssExtractRspackPlugin({
         filename: '[name].css',
       }),
+      // core-js replaces the native Array.prototype.push below Chrome 122,
+      // for edge cases (lengths past 2^32 - 1, push() with no arguments on an
+      // array with a read-only length) nothing relies on. Its JS version is
+      // ~8x slower, and the parser and CodeMirror push constantly, so keep the
+      // native one. Only core-js's global polyfill is dropped: core-js-pure,
+      // which Babel's runtime helpers import, is untouched.
+      new rspack.NormalModuleReplacementPlugin(
+        /[\\/]node_modules[\\/]core-js[\\/]modules[\\/]es\.array\.push\.js$/,
+        path.resolve(__dirname, 'utils/empty-module.js'),
+      ),
     ],
   };
 
